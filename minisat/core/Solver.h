@@ -27,7 +27,11 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "minisat/mtl/IntMap.h"
 #include "minisat/utils/Options.h"
 #include "minisat/core/SolverTypes.h"
+#include "minisat/core/Constraint.h"
 
+#include <memory>
+#include <vector>
+#include <algorithm>
 
 namespace Minisat {
 
@@ -55,6 +59,7 @@ public:
     bool    addClause (Lit p, Lit q, Lit r, Lit s);             // Add a quaternary clause to the solver. 
     bool    addClause_(      vec<Lit>& ps);                     // Add a clause to the solver without making superflous internal copy. Will
                                                                 // change the passed vector 'ps'.
+    bool    addConstraint (std::unique_ptr<Constraint>&& constr); // Add a non-clause constraint to the solver.
 
     // Solving:
     //
@@ -68,6 +73,10 @@ public:
     bool    okay         () const;                  // FALSE means solver is in a conflicting state
 
     bool    implies      (const vec<Lit>& assumps, vec<Lit>& out);
+
+    // For implementing non-clause constraints
+    bool    enqueue      (Lit p, Constraint* from);
+    void    registerUndo (Var v, Constraint* constr);
 
     // Iterate over clauses and top-level assignments:
     ClauseIterator clausesBegin() const;
@@ -155,8 +164,9 @@ protected:
 
     // Helper structures:
     //
-    struct VarData { CRef reason; int level; };
-    static inline VarData mkVarData(CRef cr, int l){ VarData d = {cr, l}; return d; }
+    struct VarData { CRef reason; Constraint* nc_reason; int level; };
+    static inline VarData mkVarData(CRef cr, int l){ VarData d = {cr, nullptr, l}; return d; }
+    static inline VarData mkVarData(Constraint* cs, int l){ VarData d = {CRef_Undef, cs, l}; return d; }
 
     struct Watcher {
         CRef cref;
@@ -201,6 +211,12 @@ protected:
     VMap<VarData>       vardata;          // Stores reason and level for each variable.
     OccLists<Lit, vec<Watcher>, WatcherDeleted, MkIndexLit>
                         watches;          // 'watches[lit]' is a list of constraints watching 'lit' (will go there if literal becomes true).
+    LMap<vec<Constraint*>>
+                        constr_watches;   // 'watches[lit]' is a list of non-clause constraints watching 'lit'
+    VMap<vec<Constraint*>>
+                        undoLists;        // 'undoLists[var]' is a list of non-clause constraints to which undo of 'var' must be notified
+    std::vector<std::unique_ptr<Constraint>>
+                        constraints;      // List of non-clause constraints.
 
     Heap<Var,VarOrderLt>order_heap;       // A priority queue of variables ordered with respect to the variable activity.
 
@@ -243,9 +259,9 @@ protected:
     void     newDecisionLevel ();                                                      // Begins a new decision level.
     void     uncheckedEnqueue (Lit p, CRef from = CRef_Undef);                         // Enqueue a literal. Assumes value of literal is undefined.
     bool     enqueue          (Lit p, CRef from = CRef_Undef);                         // Test if fact 'p' contradicts current state, enqueue otherwise.
-    CRef     propagate        ();                                                      // Perform unit propagation. Returns possibly conflicting clause.
+    std::pair<CRef, Constraint*> propagate ();                                         // Perform unit propagation. Returns possibly conflicting clause or constraint.
     void     cancelUntil      (int level);                                             // Backtrack until a certain level.
-    void     analyze          (CRef confl, vec<Lit>& out_learnt, int& out_btlevel);    // (bt = backtrack)
+    void     analyze          (CRef confl, Constraint* constr, vec<Lit>& out_learnt, int& out_btlevel);    // (bt = backtrack)
     void     analyzeFinal     (Lit p, LSet& out_conflict);                             // COULD THIS BE IMPLEMENTED BY THE ORDINARIY "analyze" BY SOME REASONABLE GENERALIZATION?
     bool     litRedundant     (Lit p);                                                 // (helper method for 'analyze()')
     lbool    search           (int nof_conflicts);                                     // Search for a given number of conflicts.
@@ -276,6 +292,7 @@ protected:
     int      decisionLevel    ()      const; // Gives the current decisionlevel.
     uint32_t abstractLevel    (Var x) const; // Used to represent an abstraction of sets of decision levels.
     CRef     reason           (Var x) const;
+    Constraint* nc_reason     (Var x) const;
     int      level            (Var x) const;
     double   progressEstimate ()      const; // DELETE THIS ?? IT'S NOT VERY USEFUL ...
     bool     withinBudget     ()      const;
@@ -294,6 +311,10 @@ protected:
     // Returns a random integer 0 <= x < size. Seed must never be 0.
     static inline int irand(double& seed, int size) {
         return (int)(drand(seed) * size); }
+
+    static bool hasConflict(const std::pair<CRef, Constraint*> &p) {
+        return p.first != CRef_Undef || p.second != nullptr;
+    }
 };
 
 
@@ -301,6 +322,7 @@ protected:
 // Implementation of inline methods:
 
 inline CRef Solver::reason(Var x) const { return vardata[x].reason; }
+inline Constraint* Solver::nc_reason(Var x) const { return vardata[x].nc_reason; }
 inline int  Solver::level (Var x) const { return vardata[x].level; }
 
 inline void Solver::insertVarOrder(Var x) {
@@ -397,6 +419,8 @@ inline void     Solver::toDimacs     (const char* file){ vec<Lit> as; toDimacs(f
 inline void     Solver::toDimacs     (const char* file, Lit p){ vec<Lit> as; as.push(p); toDimacs(file, as); }
 inline void     Solver::toDimacs     (const char* file, Lit p, Lit q){ vec<Lit> as; as.push(p); as.push(q); toDimacs(file, as); }
 inline void     Solver::toDimacs     (const char* file, Lit p, Lit q, Lit r){ vec<Lit> as; as.push(p); as.push(q); as.push(r); toDimacs(file, as); }
+
+inline void     Solver::registerUndo (Var v, Constraint* constr) { undoLists[v].push(constr); }
 
 
 //=================================================================================================

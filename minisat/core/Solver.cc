@@ -135,6 +135,9 @@ Var Solver::newVar(lbool upol, bool dvar)
     user_pol .insert(v, upol);
     decision .reserve(v);
     trail    .capacity(v+1);
+    constr_watches.reserve(mkLit(v, false));
+    constr_watches.reserve(mkLit(v, true));
+    undoLists.reserve(v);
     setDecisionVar(v, dvar);
     return v;
 }
@@ -170,7 +173,7 @@ bool Solver::addClause_(vec<Lit>& ps)
         return ok = false;
     else if (ps.size() == 1){
         uncheckedEnqueue(ps[0]);
-        return ok = (propagate() == CRef_Undef);
+        return ok = !hasConflict(propagate());
     }else{
         CRef cr = ca.alloc(ps, false);
         clauses.push(cr);
@@ -178,6 +181,21 @@ bool Solver::addClause_(vec<Lit>& ps)
     }
 
     return true;
+}
+
+
+bool Solver::addConstraint(std::unique_ptr<Constraint>&& constr)
+{
+    constraints.push_back(std::move(constr));
+
+    auto& constr_i = constraints.back();
+    vec<Lit> ws;
+    constr_i->getWatchers(*this, ws);
+    for (int i = 0; i < ws.size(); ++i) {
+        constr_watches[ws[i]].push(constr_i.get());
+    }
+    
+    return true; // TODO
 }
 
 
@@ -231,11 +249,17 @@ bool Solver::satisfied(const Clause& c) const {
 void Solver::cancelUntil(int level) {
     if (decisionLevel() > level){
         for (int c = trail.size()-1; c >= trail_lim[level]; c--){
-            Var      x  = var(trail[c]);
+            Lit      p  = trail[c];
+            Var      x  = var(p);
             assigns [x] = l_Undef;
             if (phase_saving > 1 || (phase_saving == 1 && c > trail_lim.last()))
                 polarity[x] = sign(trail[c]);
-            insertVarOrder(x); }
+            insertVarOrder(x);
+            while (undoLists[x].size() > 0) {
+                undoLists[x].last()->undo(*this, p);
+                undoLists[x].pop();
+            }
+        }
         qhead = trail_lim[level];
         trail.shrink(trail.size() - trail_lim[level]);
         trail_lim.shrink(trail_lim.size() - level);
@@ -293,10 +317,11 @@ Lit Solver::pickBranchLit()
 |        rest of literals. There may be others from the same level though.
 |  
 |________________________________________________________________________________________________@*/
-void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
+void Solver::analyze(CRef confl, Constraint* constr, vec<Lit>& out_learnt, int& out_btlevel)
 {
     int pathC = 0;
     Lit p     = lit_Undef;
+    vec<Lit> p_reason;
 
     // Generate conflict clause:
     //
@@ -304,29 +329,57 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
     int index   = trail.size() - 1;
 
     do{
-        assert(confl != CRef_Undef); // (otherwise should be UIP)
-        Clause& c = ca[confl];
+        assert(confl != CRef_Undef || constr != nullptr); // (otherwise should be UIP)
 
-        if (c.learnt())
-            claBumpActivity(c);
+        if (constr != nullptr) {
+            p_reason.clear();
+            constr->calcReason(*this, p, p_reason);
 
-        for (int j = (p == lit_Undef) ? 0 : 1; j < c.size(); j++){
-            Lit q = c[j];
+            for (int j = 0; j < p_reason.size(); ++j) {
+                Lit q = p_reason[j];
+                if (!seen[var(q)] && level(var(q)) > 0) {
+                    varBumpActivity(var(q));
+                    seen[var(q)] = 1;
+                    if (level(var(q)) >= decisionLevel())
+                        pathC++;
+                    else
+                        out_learnt.push(~q);
+                }
+            }
+        } else {
+            Clause& c = ca[confl];
 
-            if (!seen[var(q)] && level(var(q)) > 0){
-                varBumpActivity(var(q));
-                seen[var(q)] = 1;
-                if (level(var(q)) >= decisionLevel())
-                    pathC++;
-                else
-                    out_learnt.push(q);
+            if (c.learnt())
+                claBumpActivity(c);
+
+            for (int j = (p == lit_Undef) ? 0 : 1; j < c.size(); j++){
+                Lit q = c[j];
+
+                if (!seen[var(q)] && level(var(q)) > 0){
+                    varBumpActivity(var(q));
+                    seen[var(q)] = 1;
+                    if (level(var(q)) >= decisionLevel())
+                        pathC++;
+                    else
+                        out_learnt.push(q);
+                }
             }
         }
         
         // Select next clause to look at:
+        int index_pre = index;
         while (!seen[var(trail[index--])]);
+        for (int i = index + 1; i <= index_pre; ++i) {
+            Lit p = trail[i];
+            Var x = var(p);
+            while (undoLists[x].size() > 0) {
+                undoLists[x].last()->undo(*this, p);
+                undoLists[x].pop();
+            }
+        }
         p     = trail[index+1];
         confl = reason(var(p));
+        constr = nc_reason(var(p));
         seen[var(p)] = 0;
         pathC--;
 
@@ -387,6 +440,8 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
 // Check if 'p' can be removed from a conflict clause.
 bool Solver::litRedundant(Lit p)
 {
+    if (nc_reason(var(p)) != nullptr) return false; // TODO: verify if this is okay
+
     enum { seen_undef = 0, seen_source = 1, seen_removable = 2, seen_failed = 3 };
     assert(seen[var(p)] == seen_undef || seen[var(p)] == seen_source);
     assert(reason(var(p)) != CRef_Undef);
@@ -470,6 +525,7 @@ void Solver::analyzeFinal(Lit p, LSet& out_conflict)
                 assert(level(x) > 0);
                 out_conflict.insert(~trail[i]);
             }else{
+                assert(nc_reason(x) != nullptr); // TODO
                 Clause& c = ca[reason(x)];
                 for (int j = 1; j < c.size(); j++)
                     if (level(var(c[j])) > 0)
@@ -480,6 +536,18 @@ void Solver::analyzeFinal(Lit p, LSet& out_conflict)
     }
 
     seen[var(p)] = 0;
+}
+
+
+bool Solver::enqueue(Lit p, Constraint* from)
+{
+    if (value(p) != l_Undef) {
+        return value(p) != l_False;
+    }
+    assigns[var(p)] = lbool(!sign(p));
+    vardata[var(p)] = mkVarData(from, decisionLevel());
+    trail.push_(p);
+    return true;
 }
 
 
@@ -503,9 +571,10 @@ void Solver::uncheckedEnqueue(Lit p, CRef from)
 |    Post-conditions:
 |      * the propagation queue is empty, even if there was a conflict.
 |________________________________________________________________________________________________@*/
-CRef Solver::propagate()
+std::pair<CRef, Constraint*> Solver::propagate()
 {
     CRef    confl     = CRef_Undef;
+    Constraint* constr = nullptr;
     int     num_props = 0;
 
     while (qhead < trail.size()){
@@ -556,11 +625,19 @@ CRef Solver::propagate()
         NextClause:;
         }
         ws.shrink(i - j);
+
+        vec<Constraint*>& ncws = constr_watches[p];
+        for (int k = 0; k < ncws.size(); ++k) {
+            if (!ncws[k]->propagate(*this, p)) {
+                constr = ncws[k];
+                qhead = trail.size();
+            }
+        }
     }
     propagations += num_props;
     simpDB_props -= num_props;
 
-    return confl;
+    return {confl, constr};
 }
 
 
@@ -642,8 +719,7 @@ bool Solver::simplify()
 {
     assert(decisionLevel() == 0);
 
-    if (!ok || propagate() != CRef_Undef)
-        return ok = false;
+    if (!ok || hasConflict(propagate())) return ok = false;
 
     if (nAssigns() == simpDB_assigns || (simpDB_props > 0))
         return true;
@@ -666,7 +742,6 @@ bool Solver::simplify()
             if (seen[var(trail[i])] == 0)
                 trail[j++] = trail[i];
         trail.shrink(i - j);
-        //printf("trail.size()= %d, qhead = %d\n", trail.size(), qhead);
         qhead = trail.size();
 
         for (int i = 0; i < released_vars.size(); i++)
@@ -708,14 +783,14 @@ lbool Solver::search(int nof_conflicts)
     starts++;
 
     for (;;){
-        CRef confl = propagate();
-        if (confl != CRef_Undef){
+        std::pair<CRef, Constraint*> confl_pair = propagate();
+        if (hasConflict(confl_pair)){
             // CONFLICT
             conflicts++; conflictC++;
             if (decisionLevel() == 0) return l_False;
 
             learnt_clause.clear();
-            analyze(confl, learnt_clause, backtrack_level);
+            analyze(confl_pair.first, confl_pair.second, learnt_clause, backtrack_level);
             cancelUntil(backtrack_level);
 
             if (learnt_clause.size() == 1){
@@ -899,7 +974,7 @@ bool Solver::implies(const vec<Lit>& assumps, vec<Lit>& out)
 
     unsigned trail_before = trail.size();
     bool     ret          = true;
-    if (propagate() == CRef_Undef){
+    if (!hasConflict(propagate())){
         out.clear();
         for (int j = trail_before; j < trail.size(); j++)
             out.push(trail[j]);
