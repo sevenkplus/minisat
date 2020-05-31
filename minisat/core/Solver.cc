@@ -631,6 +631,7 @@ std::pair<CRef, Constraint*> Solver::propagate()
             if (!ncws[k]->propagate(*this, p)) {
                 constr = ncws[k];
                 qhead = trail.size();
+                break;
             }
         }
     }
