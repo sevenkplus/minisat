@@ -57,6 +57,10 @@ extern void   sigTerm(void handler(int));      // Set up handling of available t
 
 static inline double Minisat::cpuTime(void) { return (double)clock() / CLOCKS_PER_SEC; }
 
+#elif defined(EMSCRIPTEN)
+
+static inline double Minisat::cpuTime(void) { return 0.0; }
+
 #else
 #include <sys/time.h>
 #include <sys/resource.h>
