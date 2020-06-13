@@ -91,7 +91,7 @@ double Minisat::memUsedPeak() { return memUsed(); }
 
 #else
 double Minisat::memUsed()     { return 0; }
-double Minisat::memUsedPeak() { return 0; }
+double Minisat::memUsedPeak(bool) { return 0; }
 #endif
 
 
@@ -106,7 +106,7 @@ void Minisat::setX86FPUPrecision()
 }
 
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(EMSCRIPTEN)
 void Minisat::limitMemory(uint64_t max_mem_mb)
 {
 // FIXME: OpenBSD does not support RLIMIT_AS. Not sure how well RLIMIT_DATA works instead.
@@ -138,7 +138,7 @@ void Minisat::limitMemory(uint64_t /*max_mem_mb*/)
 #endif
 
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#if !defined(_MSC_VER) && !defined(__MINGW32__) && !defined(EMSCRIPTEN)
 void Minisat::limitTime(uint32_t max_cpu_time)
 {
     if (max_cpu_time != 0){
