@@ -186,16 +186,24 @@ bool Solver::addClause_(vec<Lit>& ps)
 
 bool Solver::addConstraint(std::unique_ptr<Constraint>&& constr)
 {
+    assert(decisionLevel() == 0);
+    if (!ok) return false;
+
     constraints.push_back(std::move(constr));
 
     auto& constr_i = constraints.back();
     vec<Lit> ws;
-    constr_i->getWatchers(*this, ws);
+
+    if (!constr_i->initialize(*this, ws)) {
+        return ok = false;
+    }
+    if (hasConflict(propagate())) {
+        return ok = false;
+    }
     for (int i = 0; i < ws.size(); ++i) {
         constr_watches[ws[i]].push(constr_i.get());
     }
-    
-    return true; // TODO
+    return true;
 }
 
 
