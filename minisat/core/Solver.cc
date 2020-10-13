@@ -197,11 +197,11 @@ bool Solver::addConstraint(std::unique_ptr<Constraint>&& constr)
     if (!constr_i->initialize(*this, ws)) {
         return ok = false;
     }
-    if (hasConflict(propagate())) {
-        return ok = false;
-    }
     for (int i = 0; i < ws.size(); ++i) {
         constr_watches[ws[i]].push(constr_i.get());
+    }
+    if (hasConflict(propagate())) {
+        return ok = false;
     }
     return true;
 }
