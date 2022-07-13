@@ -18,6 +18,7 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **************************************************************************************************/
 
+#include <iostream>
 #include <math.h>
 
 #include "minisat/mtl/Alg.h"
@@ -797,6 +798,8 @@ lbool Solver::search(int nof_conflicts)
             // CONFLICT
             conflicts++; conflictC++;
             if (decisionLevel() == 0) return l_False;
+
+            std::cerr << "conflict at decision level " << decisionLevel() << "\n";
 
             learnt_clause.clear();
             analyze(confl_pair.first, confl_pair.second, learnt_clause, backtrack_level);
