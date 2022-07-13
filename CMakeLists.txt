@@ -31,6 +31,7 @@ include_directories(${minisat_SOURCE_DIR})
 #--------------------------------------------------------------------------------------------------
 # Compile flags:
 
+add_compile_options(-std=c++11)
 add_definitions(-D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS)
 
 #--------------------------------------------------------------------------------------------------
@@ -59,7 +60,7 @@ endif()
 set_target_properties(minisat-lib-static PROPERTIES OUTPUT_NAME "minisat")
 set_target_properties(minisat-lib-shared
   PROPERTIES
-    OUTPUT_NAME "minisat" 
+    OUTPUT_NAME "minisat"
     VERSION ${MINISAT_VERSION}
     SOVERSION ${MINISAT_SOVERSION})
 
@@ -68,7 +69,7 @@ set_target_properties(minisat_simp       PROPERTIES OUTPUT_NAME "minisat")
 #--------------------------------------------------------------------------------------------------
 # Installation targets:
 
-install(TARGETS minisat-lib-static minisat-lib-shared minisat_core minisat_simp 
+install(TARGETS minisat-lib-static minisat-lib-shared minisat_core minisat_simp
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib)
